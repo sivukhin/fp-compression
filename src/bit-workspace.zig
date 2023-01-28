@@ -4,10 +4,10 @@ const testing = std.testing;
 pub fn BitReadWorkspace(comptime T: type, comptime Reader: type) type {
     const t_info = @typeInfo(T);
     if (t_info != .Int or t_info.Int.signedness == .signed) {
-        @compileError(comptime std.fmt.comptimePrint("BitReadWorkspace can be constructed only from unsigned integer type, but given {}", .{T}));
+        @compileError(std.fmt.comptimePrint("BitReadWorkspace can be constructed only from unsigned integer type, but given {}", .{T}));
     }
     if (t_info.Int.bits < 8) {
-        @compileError(comptime std.fmt.comptimePrint("BitReadWorkspace can be constructed from unsigned integer with at least 8 bits, but given {}", .{T}));
+        @compileError(std.fmt.comptimePrint("BitReadWorkspace can be constructed from unsigned integer with at least 8 bits, but given {}", .{T}));
     }
     return struct {
         const Self = @This();
@@ -56,10 +56,10 @@ pub fn bitReadWorkspace(comptime T: type, reader: anytype) BitReadWorkspace(T, @
 pub fn BitWriteWorkspace(comptime T: type, comptime Writer: type) type {
     const t_info = @typeInfo(T);
     if (t_info != .Int or t_info.Int.signedness == .signed) {
-        @compileError(comptime std.fmt.comptimePrint("BitWriteWorkspace can be constructed only from unsigned integer type, but given {}", .{T}));
+        @compileError(std.fmt.comptimePrint("BitWriteWorkspace can be constructed only from unsigned integer type, but given {}", .{T}));
     }
     if (t_info.Int.bits < 8) {
-        @compileError(comptime std.fmt.comptimePrint("BitWriteWorkspace can be constructed from unsigned integer with at least 8 bits, but given {}", .{T}));
+        @compileError(std.fmt.comptimePrint("BitWriteWorkspace can be constructed from unsigned integer with at least 8 bits, but given {}", .{T}));
     }
     return struct {
         const Self = @This();

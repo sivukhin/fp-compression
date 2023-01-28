@@ -56,7 +56,7 @@ test "entropy table" {
 pub fn EntropyCompressor(comptime T: type, comptime Writer: type) type {
     const typeInfo = @typeInfo(T);
     if (typeInfo != .Int and typeInfo != .Float) {
-        @compileError(comptime std.fmt.comptimePrint("supported only integer types but given {}", .{T}));
+        @compileError(std.fmt.comptimePrint("supported only integer types but given {}", .{T}));
     }
     const UIntType = std.meta.Int(.unsigned, @bitSizeOf(T));
     const WorkspaceType = std.meta.Int(.unsigned, 2 * @bitSizeOf(T));
@@ -125,7 +125,7 @@ pub fn entropyCompressor(comptime T: type, writer: anytype) EntropyCompressor(T,
 pub fn EntropyDecompressor(comptime T: type, comptime Reader: type) type {
     const typeInfo = @typeInfo(T);
     if (typeInfo != .Int and typeInfo != .Float) {
-        @compileError(comptime std.fmt.comptimePrint("supported only integer types but given {}", .{T}));
+        @compileError(std.fmt.comptimePrint("supported only integer types but given {}", .{T}));
     }
     const UIntType = std.meta.Int(.unsigned, @bitSizeOf(T));
     const WorkspaceType = std.meta.Int(.unsigned, 2 * @bitSizeOf(T));
