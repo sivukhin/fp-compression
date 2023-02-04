@@ -1,21 +1,33 @@
 const std = @import("std");
 
+const packages = struct {
+    const zsc = std.build.Pkg{
+        .name = "zsc",
+        .source = .{ .path = "lib/zsc.zig" },
+        .dependencies = &[_]std.build.Pkg{},
+    };
+};
+
 pub fn build(b: *std.build.Builder) void {
-    // Standard release options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
+    const target = b.standardTargetOptions(.{});
     const mode = b.standardReleaseOptions();
 
-    const lib = b.addStaticLibrary("fp-compression", "src/gorilla.zig");
-    lib.setBuildMode(mode);
-    lib.install();
+    const cmd = b.addExecutable("zsc", "cmd/main.zig");
+    cmd.addPackage(packages.zsc);
+    cmd.setBuildMode(mode);
+    cmd.setTarget(target);
+    cmd.install();
 
-    const gorilla_tests = b.addTest("src/gorilla.zig");
+    const run_step = b.step("run", "Run zsc");
+    run_step.dependOn(&cmd.step);
+
+    const gorilla_tests = b.addTest("lib/gorilla.zig");
     gorilla_tests.setBuildMode(mode);
 
-    const entropy_test = b.addTest("src/entropy.zig");
+    const entropy_test = b.addTest("lib/entropy.zig");
     entropy_test.setBuildMode(mode);
 
-    const workspace_test = b.addTest("src/bit-workspace.zig");
+    const workspace_test = b.addTest("lib/bit-workspace.zig");
     workspace_test.setBuildMode(mode);
 
     const test_step = b.step("test", "Run library tests");

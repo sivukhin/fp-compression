@@ -1,3 +1,3 @@
-## fp-compression
+## zsc
 
-Bunch of algorithms for floating point sequence compression
+Bunch of algorithms for number sequence compression

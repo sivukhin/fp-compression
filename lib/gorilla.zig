@@ -10,7 +10,9 @@ pub fn GorillaCompressor(comptime T: type, comptime Writer: type) type {
     const UIntType = std.meta.Int(.unsigned, @bitSizeOf(T));
     const WorkspaceType = std.meta.Int(.unsigned, 2 * @bitSizeOf(T));
     return struct {
+        pub const width = @bitSizeOf(T);
         const Self = @This();
+
         prev: ?UIntType,
         prev_leading_zeros: u8,
         prev_trailing_zeros: u8,
@@ -74,6 +76,7 @@ pub fn GorillaDecompressor(comptime T: type, comptime Reader: type) type {
     const UIntType = std.meta.Int(.unsigned, @bitSizeOf(T));
     const WorkspaceType = std.meta.Int(.unsigned, 2 * @bitSizeOf(T));
     return struct {
+        pub const width = @bitSizeOf(T);
         const Self = @This();
         prev: ?UIntType,
         prev_leading_zeros: u8,
@@ -127,7 +130,7 @@ pub fn gorillaDecompressor(comptime T: type, reader: anytype) GorillaDecompresso
 }
 
 fn gorillaTest(comptime T: type, data: []const T) !void {
-    var buffer = [_]u8{0} ** 1024;
+    var buffer = [_]u8{0} ** (16 * 1024);
     {
         var stream = std.io.fixedBufferStream(&buffer);
         var counting = std.io.countingWriter(stream.writer());

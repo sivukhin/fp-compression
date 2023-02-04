@@ -15,13 +15,15 @@ pub fn BitReadWorkspace(comptime T: type, comptime Reader: type) type {
         position: u8,
         capacity: u8,
         reader: Reader,
+        end: bool,
 
         pub fn init(reader: Reader) Self {
-            return .{ .workspace = 0, .position = 0, .capacity = 0, .reader = reader };
+            return .{ .workspace = 0, .position = 0, .capacity = 0, .reader = reader, .end = false };
         }
 
         pub fn getBits(self: *Self, comptime ValueT: type, bits: anytype) !ValueT {
             if (self.capacity < bits) {
+                if (self.end) return error.EndOfStream;
                 try self.load();
             }
             const value = self.workspace & (~std.math.shl(T, ~@as(T, 0), bits));
@@ -38,13 +40,16 @@ pub fn BitReadWorkspace(comptime T: type, comptime Reader: type) type {
             const expected_bytes = (@bitSizeOf(T) - self.capacity) / 8;
             var tmp: [@bitSizeOf(T) / 8]u8 = undefined;
             const actual_bytes = try self.reader.readAll((&tmp)[0..expected_bytes]);
-            // var i: usize = 0;
-            // while (i < actual_bytes) : (i += 1) {
-            //     std.debug.print("read byte: {x}\n", .{tmp[i]});
-            // }
             const mask = ~std.math.shl(T, ~@as(T, 0), 8 * actual_bytes);
             self.workspace = (self.workspace & ~(std.math.shl(T, mask, self.capacity))) | std.math.shl(T, std.mem.readIntNative(T, &tmp) & mask, self.capacity);
             self.capacity += @intCast(u8, 8 * actual_bytes);
+            if (actual_bytes < expected_bytes) {
+                self.capacity -= 1;
+                while (self.capacity >= 0 and self.workspace & std.math.shl(T, @as(T, 1), self.capacity) > 0) {
+                    self.capacity -= 1;
+                }
+                self.end = true;
+            }
         }
     };
 }
