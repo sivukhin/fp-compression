@@ -196,9 +196,17 @@ pub fn main() !void {
         std.debug.print("error: {s}\n", .{@errorName(err)});
         return;
     };
+    defer {
+        args.input.close();
+        args.output.close();
+    }
 
-    var reader = args.input.reader();
-    var writer = args.output.writer();
+    var buffered_reader = std.io.bufferedReader(args.input.reader());
+    var buffered_writer = std.io.bufferedWriter(args.output.writer());
+    defer buffered_writer.flush() catch unreachable;
+
+    var reader = buffered_reader.reader();
+    var writer = buffered_writer.writer();
     switch (args.params) {
         .compress => |c| {
             switch (c.algorithm) {
