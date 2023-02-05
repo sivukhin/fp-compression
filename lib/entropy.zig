@@ -38,7 +38,7 @@ pub fn entropyTable(comptime n: comptime_int) EntropyTable(n) {
         value_by_index[0][0] = 0;
         value_by_index[n][0] = (1 << n) - 1;
         var i: u32 = (1 << n) - 2;
-        inline while (i > 0) : (i -= 1) {
+        while (i > 0) : (i -= 1) {
             const next = nextMask(i);
             if (next >= (1 << n)) {
                 index_by_value[i] = 0;
@@ -74,16 +74,16 @@ pub fn EntropyCompressor(comptime T: type, comptime Writer: type) type {
         const Self = @This();
         const entropy_table = entropyTable(8);
 
-        batch: [8]UIntType,
-        counts: [@bitSizeOf(UIntType)]u8,
+        batch: [256]UIntType,
         batch_size: u32,
+        counts: [@bitSizeOf(UIntType)]u8,
         workspace: bw.BitWriteWorkspace(WorkspaceType, Writer),
 
         pub fn init(writer: Writer) Self {
             return .{
-                .batch = [_]UIntType{0} ** 8,
-                .counts = [_]u8{8} ** @bitSizeOf(UIntType),
+                .batch = [_]UIntType{0} ** 256,
                 .batch_size = 0,
+                .counts = [_]u8{8} ** @bitSizeOf(UIntType),
                 .workspace = bw.bitWriteWorkspace(WorkspaceType, writer),
             };
         }
@@ -91,36 +91,54 @@ pub fn EntropyCompressor(comptime T: type, comptime Writer: type) type {
         pub fn add(self: *Self, element: T) !void {
             self.batch[self.batch_size] = @bitCast(UIntType, element);
             self.batch_size += 1;
-            if (self.batch_size < 8) {
+            if (self.batch_size < self.batch.len) {
                 return;
             }
-            comptime var bit: u32 = 0;
-            inline while (bit < @bitSizeOf(UIntType)) : (bit += 1) {
+            try self.workspace.unsafeAdd(1, 1);
+            try self.dump();
+        }
+
+        pub fn finish(self: *Self) !void {
+            if (self.batch_size % 8 != 0) {
+                try self.workspace.unsafeAdd(self.batch_size << 1, 9);
+                while (self.batch_size % 8 != 0) : (self.batch_size += 1) {
+                    self.batch[self.batch_size] = self.batch[self.batch_size - 1];
+                }
+                try self.dump();
+            }
+            try self.workspace.finish();
+        }
+
+        fn dump(self: *Self) !void {
+            var i: u32 = 0;
+            while (i < self.batch_size) : (i += 8) {
+                try self.dump8(i);
+            }
+            self.batch_size = 0;
+        }
+
+        fn dump8(self: *Self, position: u32) !void {
+            var bit: u32 = 0;
+            while (bit < @bitSizeOf(UIntType)) : (bit += 1) {
+                try self.workspace.flush();
+
                 var number: u8 = 0;
                 comptime var element_id: u32 = 0;
                 inline while (element_id < 8) : (element_id += 1) {
-                    number |= @intCast(u8, ((self.batch[element_id] >> bit) & 1) << (element_id));
+                    number |= @intCast(u8, (std.math.shr(UIntType, self.batch[position + element_id], bit) & 1) << (element_id));
                 }
                 const ones_count = @popCount(number);
                 const zero_count = 8 - ones_count;
                 const min_count = std.math.min(ones_count, zero_count);
                 if (self.counts[bit] > 1) {
-                    _ = try self.workspace.add(number, 8);
+                    try self.workspace.unsafeAdd(number, 8);
                 } else {
-                    _ = try self.workspace.add(if (ones_count < zero_count) @as(u1, 1) else @as(u1, 0), 1);
-                    _ = try self.workspace.add(std.math.shl(u8, 1, min_count), min_count + 1);
-                    _ = try self.workspace.add(Self.entropy_table.index_by_value[number], Self.entropy_table.length[ones_count]);
+                    try self.workspace.unsafeAdd(if (ones_count < zero_count) @as(u1, 1) else @as(u1, 0), 1);
+                    try self.workspace.unsafeAdd(std.math.shl(u8, 1, min_count), min_count + 1);
+                    try self.workspace.unsafeAdd(Self.entropy_table.index_by_value[number], Self.entropy_table.length[ones_count]);
                 }
                 self.counts[bit] = std.math.min(ones_count, zero_count);
             }
-            self.batch_size = 0;
-        }
-
-        pub fn flush(self: *Self) !void {
-            while (self.batch_size != 0) {
-                try self.add(0);
-            }
-            _ = try self.workspace.finish();
         }
     };
 }
@@ -142,23 +160,28 @@ pub fn EntropyDecompressor(comptime T: type, comptime Reader: type) type {
         const Self = @This();
         const entropy_table = entropyTable(8);
 
-        batch: [8]UIntType,
-        counts: [@bitSizeOf(UIntType)]u8,
+        batch: [256]UIntType,
         batch_position: u32,
+        batch_capacity: u32,
+        counts: [@bitSizeOf(UIntType)]u8,
         workspace: bw.BitReadWorkspace(WorkspaceType, Reader),
 
         pub fn init(reader: Reader) Self {
             return .{
-                .batch = [_]UIntType{0} ** 8,
+                .batch = [_]UIntType{0} ** 256,
+                .batch_position = 256,
+                .batch_capacity = 256,
                 .counts = [_]u8{8} ** @bitSizeOf(UIntType),
-                .batch_position = 8,
                 .workspace = bw.bitReadWorkspace(WorkspaceType, reader),
             };
         }
 
         pub fn get(self: *Self) !T {
-            if (self.batch_position == 8) {
+            if (self.batch_position == self.batch.len) {
                 try self.load();
+            }
+            if (self.batch_position == self.batch_capacity) {
+                return error.EndOfStream;
             }
             defer self.batch_position += 1;
             return @bitCast(T, self.batch[self.batch_position]);
@@ -166,10 +189,17 @@ pub fn EntropyDecompressor(comptime T: type, comptime Reader: type) type {
 
         fn load(self: *Self) !void {
             self.batch_position = 0;
+            self.batch_capacity = if (try self.workspace.getFull(u1) == 0) try self.workspace.getBits(u8, 8) else 256;
             inline for (self.batch) |*value| {
                 value.* = 0;
             }
+            var i: u32 = 0;
+            while (i < self.batch_capacity) : (i += 8) {
+                try self.load8(i);
+            }
+        }
 
+        fn load8(self: *Self, position: u32) !void {
             comptime var bit: u32 = 0;
             inline while (bit < @bitSizeOf(UIntType)) : (bit += 1) {
                 var number: u8 = 0;
@@ -187,7 +217,7 @@ pub fn EntropyDecompressor(comptime T: type, comptime Reader: type) type {
                 }
                 comptime var element_id: u32 = 0;
                 inline while (element_id < 8) : (element_id += 1) {
-                    self.batch[element_id] |= std.math.shl(UIntType, ((number >> element_id) & 1), bit);
+                    self.batch[position + element_id] |= std.math.shl(UIntType, ((number >> element_id) & 1), bit);
                 }
                 self.counts[bit] = std.math.min(ones_count, 8 - ones_count);
             }
@@ -201,7 +231,7 @@ pub fn entropyDecompressor(comptime T: type, reader: anytype) EntropyDecompresso
 }
 
 fn entropyTest(comptime T: type, data: []const T) !void {
-    var buffer = [_]u8{0} ** 1024;
+    var buffer = [_]u8{0} ** (1 << 16);
     {
         var stream = std.io.fixedBufferStream(&buffer);
         var counting = std.io.countingWriter(stream.writer());
@@ -209,7 +239,7 @@ fn entropyTest(comptime T: type, data: []const T) !void {
         for (data) |f| {
             try entropy.add(f);
         }
-        try entropy.flush();
+        try entropy.finish();
         const total_size = counting.bytes_written;
         const raw_size = data.len * @sizeOf(T);
         std.debug.print("total size {} bytes, raw size {} bytes, savings: {d:.2}%\n", .{ total_size, raw_size, (1.0 - @intToFloat(f32, total_size) / @intToFloat(f32, raw_size)) * 100 });
@@ -224,35 +254,40 @@ fn entropyTest(comptime T: type, data: []const T) !void {
 }
 
 test "entropy f32 embeddings test" {
-    // var data = [_]f32{ 0.043154765, 0.164135829, -0.123626679, -0.167725742, -0.110710979, 0.102363497, 0.022291092, -0.187514856, -0.157604620, -0.065454222, 0.034411345, -0.226510420, 0.228433594, -0.070296884, -0.068169087, 0.049356200, -0.042770151, 0.151971295, 0.402687907, -0.366405696, 0.034094390, 0.051680047, -0.067786627, 0.160439745, -0.048753500, -0.196946219, 0.045420300, 0.189751863, 0.018866321, -0.002804127, -0.247762606, 0.365801245, 1.000000000, 0.405465096, -2.120258808 };
-    var data = [_]f32{ 0.043154765, 0.164135829, -0.123626679, -0.167725742, -0.110710979, 0.102363497, 0.022291092, -0.187514856, -0.157604620, -0.065454222, 0.034411345, -0.226510420, 0.228433594, -0.070296884, -0.068169087, 0.049356200, -0.042770151, 0.151971295, 0.402687907, -0.366405696, 0.034094390, 0.051680047, -0.067786627, 0.160439745, -0.048753500, -0.196946219, 0.045420300, 0.189751863, 0.018866321, -0.002804127, -0.247762606, 0.365801245 };
+    var data = [_]f32{ 0.043154765, 0.164135829, -0.123626679, -0.167725742, -0.110710979, 0.102363497, 0.022291092, -0.187514856, -0.157604620, -0.065454222, 0.034411345, -0.226510420, 0.228433594, -0.070296884, -0.068169087, 0.049356200, -0.042770151, 0.151971295, 0.402687907, -0.366405696, 0.034094390, 0.051680047, -0.067786627, 0.160439745, -0.048753500, -0.196946219, 0.045420300, 0.189751863, 0.018866321, -0.002804127, -0.247762606, 0.365801245, 1.000000000, 0.405465096, -2.120258808 };
     try entropyTest(f32, &data);
 }
 
 test "entropy f64 embeddings test" {
-    // var data = [_]f64{ 0.043154765, 0.164135829, -0.123626679, -0.167725742, -0.110710979, 0.102363497, 0.022291092, -0.187514856, -0.157604620, -0.065454222, 0.034411345, -0.226510420, 0.228433594, -0.070296884, -0.068169087, 0.049356200, -0.042770151, 0.151971295, 0.402687907, -0.366405696, 0.034094390, 0.051680047, -0.067786627, 0.160439745, -0.048753500, -0.196946219, 0.045420300, 0.189751863, 0.018866321, -0.002804127, -0.247762606, 0.365801245, 1.000000000, 0.405465096, -2.120258808 };
-    var data = [_]f64{ 0.043154765, 0.164135829, -0.123626679, -0.167725742, -0.110710979, 0.102363497, 0.022291092, -0.187514856, -0.157604620, -0.065454222, 0.034411345, -0.226510420, 0.228433594, -0.070296884, -0.068169087, 0.049356200, -0.042770151, 0.151971295, 0.402687907, -0.366405696, 0.034094390, 0.051680047, -0.067786627, 0.160439745, -0.048753500, -0.196946219, 0.045420300, 0.189751863, 0.018866321, -0.002804127, -0.247762606, 0.365801245 };
+    var data = [_]f64{ 0.043154765, 0.164135829, -0.123626679, -0.167725742, -0.110710979, 0.102363497, 0.022291092, -0.187514856, -0.157604620, -0.065454222, 0.034411345, -0.226510420, 0.228433594, -0.070296884, -0.068169087, 0.049356200, -0.042770151, 0.151971295, 0.402687907, -0.366405696, 0.034094390, 0.051680047, -0.067786627, 0.160439745, -0.048753500, -0.196946219, 0.045420300, 0.189751863, 0.018866321, -0.002804127, -0.247762606, 0.365801245, 1.000000000, 0.405465096, -2.120258808 };
     try entropyTest(f64, &data);
 }
 
 test "entropy f32 cpu usage test" {
-    // var data = [_]f32{ 15.904462, 16.393611, 16.775417, 16.912917, 16.88375, 16.376875, 16.208681, 16.586528, 17.123681, 16.650278, 16.534792, 16.692425, 16.456776, 15.761528, 16.051944, 15.914444, 16.04, 16.158194, 16.242292, 16.281528, 17.261042, 16.457639, 17.093681, 16.904653, 15.960417, 16.016667, 16.188 };
-    var data = [_]f32{ 15.904462, 16.393611, 16.775417, 16.912917, 16.88375, 16.376875, 16.208681, 16.586528, 17.123681, 16.650278, 16.534792, 16.692425, 16.456776, 15.761528, 16.051944, 15.914444, 16.04, 16.158194, 16.242292, 16.281528, 17.261042, 16.457639, 17.093681, 16.904653 };
+    var data = [_]f32{ 15.904462, 16.393611, 16.775417, 16.912917, 16.88375, 16.376875, 16.208681, 16.586528, 17.123681, 16.650278, 16.534792, 16.692425, 16.456776, 15.761528, 16.051944, 15.914444, 16.04, 16.158194, 16.242292, 16.281528, 17.261042, 16.457639, 17.093681, 16.904653, 15.960417, 16.016667, 16.188 };
     try entropyTest(f32, &data);
 }
 
 test "entropy f64 cpu usage test" {
-    // var data = [_]f64{ 15.904462, 16.393611, 16.775417, 16.912917, 16.88375, 16.376875, 16.208681, 16.586528, 17.123681, 16.650278, 16.534792, 16.692425, 16.456776, 15.761528, 16.051944, 15.914444, 16.04, 16.158194, 16.242292, 16.281528, 17.261042, 16.457639, 17.093681, 16.904653, 15.960417, 16.016667, 16.188 };
-    var data = [_]f64{ 15.904462, 16.393611, 16.775417, 16.912917, 16.88375, 16.376875, 16.208681, 16.586528, 17.123681, 16.650278, 16.534792, 16.692425, 16.456776, 15.761528, 16.051944, 15.914444, 16.04, 16.158194, 16.242292, 16.281528, 17.261042, 16.457639, 17.093681, 16.904653 };
+    var data = [_]f64{ 15.904462, 16.393611, 16.775417, 16.912917, 16.88375, 16.376875, 16.208681, 16.586528, 17.123681, 16.650278, 16.534792, 16.692425, 16.456776, 15.761528, 16.051944, 15.914444, 16.04, 16.158194, 16.242292, 16.281528, 17.261042, 16.457639, 17.093681, 16.904653, 15.960417, 16.016667, 16.188 };
     try entropyTest(f64, &data);
 }
 
-// test "entropy f32 sample from paper" {
-//     var data = [_]f32{ 15.5, 14.0625, 3.25, 8.625, 13.1 };
-//     try entropyTest(f32, &data);
-// }
+test "entropy f32 sample from paper" {
+    var data = [_]f32{ 15.5, 14.0625, 3.25, 8.625, 13.1 };
+    try entropyTest(f32, &data);
+}
 
-// test "entropy f64 sample from paper" {
-//     var data = [_]f64{ 15.5, 14.0625, 3.25, 8.625, 13.1 };
-//     try entropyTest(f64, &data);
-// }
+test "entropy f64 sample from paper" {
+    var data = [_]f64{ 15.5, 14.0625, 3.25, 8.625, 13.1 };
+    try entropyTest(f64, &data);
+}
+
+test "entropy stress" {
+    var random = std.rand.DefaultPrng.init(0);
+    var data = [_]f32{0} ** (1 << 13);
+    for (data) |*value| {
+        value.* = random.random().floatNorm(f32);
+    }
+    try entropyTest(f32, &data);
+}

@@ -13,52 +13,47 @@ pub fn GorillaCompressor(comptime T: type, comptime Writer: type) type {
         pub const width = @bitSizeOf(T);
         const Self = @This();
 
-        prev: ?UIntType,
+        prev: UIntType,
         prev_leading_zeros: u8,
         prev_trailing_zeros: u8,
         workspace: bw.BitWriteWorkspace(WorkspaceType, Writer),
 
         pub fn init(writer: Writer) Self {
             return .{
-                .prev = null,
+                .prev = 0,
                 .prev_leading_zeros = 0,
                 .prev_trailing_zeros = 0,
                 .workspace = bw.bitWriteWorkspace(WorkspaceType, writer),
             };
         }
         pub fn add(self: *Self, element: T) !void {
+            const leading_zeros_log = comptime @bitSizeOf(std.math.Log2Int(UIntType));
+            const significant_bits_log = comptime @bitSizeOf(std.math.Log2Int(UIntType)) + 1;
+
             const current_bits = @bitCast(UIntType, element);
-            defer self.prev = current_bits;
-            if (self.prev == null) {
-                self.prev_leading_zeros = 0;
-                self.prev_trailing_zeros = 0;
-                _ = try self.workspace.add(current_bits, @bitSizeOf(UIntType));
-                return;
-            }
-            const previous_bits = @bitCast(UIntType, self.prev.?);
-            const diff_bits = current_bits ^ previous_bits;
-            if (diff_bits == 0) {
-                _ = try self.workspace.add(0, 1);
-            } else {
-                _ = try self.workspace.add(1, 1);
+
+            const diff_bits = current_bits ^ self.prev;
+            try self.workspace.unsafeAdd(if (diff_bits == 0) @as(u32, 0) else @as(u32, 1), 1);
+
+            if (diff_bits != 0) {
                 const leading_zeros = @clz(diff_bits);
                 const trailing_zeros = @ctz(diff_bits);
                 const significant_bits = @bitSizeOf(T) - leading_zeros - trailing_zeros;
                 if (leading_zeros >= self.prev_leading_zeros and trailing_zeros >= self.prev_trailing_zeros) {
-                    _ = try self.workspace.add(0, 1);
-                    _ = try self.workspace.add(std.math.shr(UIntType, diff_bits, self.prev_trailing_zeros), @bitSizeOf(T) - self.prev_trailing_zeros - self.prev_leading_zeros);
+                    try self.workspace.unsafeAdd(0, 1);
+                    try self.workspace.unsafeAdd(std.math.shr(UIntType, diff_bits, self.prev_trailing_zeros), @bitSizeOf(T) - self.prev_trailing_zeros - self.prev_leading_zeros);
                 } else {
-                    _ = try self.workspace.add(1, 1);
-                    _ = try self.workspace.add(leading_zeros, @bitSizeOf(std.math.Log2Int(UIntType)));
-                    _ = try self.workspace.add(significant_bits, @bitSizeOf(std.math.Log2Int(UIntType)) + 1);
-                    _ = try self.workspace.add(std.math.shr(UIntType, diff_bits, trailing_zeros), significant_bits);
+                    try self.workspace.unsafeAdd(1 | std.math.shl(UIntType, leading_zeros, 1) | std.math.shl(UIntType, significant_bits, (1 + leading_zeros_log)), 1 + leading_zeros_log + significant_bits_log);
+                    try self.workspace.unsafeAdd(std.math.shr(UIntType, diff_bits, trailing_zeros), significant_bits);
                 }
                 self.prev_leading_zeros = leading_zeros;
                 self.prev_trailing_zeros = trailing_zeros;
             }
+            try self.workspace.flush();
+            self.prev = current_bits;
         }
-        pub fn flush(self: *Self) !void {
-            _ = try self.workspace.finish();
+        pub fn finish(self: *Self) !void {
+            try self.workspace.finish();
         }
     };
 }
@@ -78,31 +73,23 @@ pub fn GorillaDecompressor(comptime T: type, comptime Reader: type) type {
     return struct {
         pub const width = @bitSizeOf(T);
         const Self = @This();
-        prev: ?UIntType,
+        prev: UIntType,
         prev_leading_zeros: u8,
         prev_trailing_zeros: u8,
         workspace: bw.BitReadWorkspace(WorkspaceType, Reader),
 
         pub fn init(reader: Reader) Self {
             return .{
-                .prev = null,
+                .prev = 0,
                 .prev_leading_zeros = 0,
                 .prev_trailing_zeros = 0,
                 .workspace = bw.bitReadWorkspace(WorkspaceType, reader),
             };
         }
         pub fn get(self: *Self) !T {
-            if (self.prev == null) {
-                const current_bits = try self.workspace.getFull(UIntType);
-                self.prev = current_bits;
-                self.prev_leading_zeros = 0;
-                self.prev_trailing_zeros = 0;
-                return @bitCast(T, current_bits);
-            }
-
             const zero_control = try self.workspace.getFull(u1);
             if (zero_control == 0) {
-                return @bitCast(T, self.prev.?);
+                return @bitCast(T, self.prev);
             }
             const change_control = try self.workspace.getFull(u1);
             const diff_bits = diff_bits_value: {
@@ -115,7 +102,7 @@ pub fn GorillaDecompressor(comptime T: type, comptime Reader: type) type {
                     break :diff_bits_value std.math.shl(UIntType, try self.workspace.getBits(UIntType, diff_bits_len), @bitSizeOf(T) - leading_zeros_len - diff_bits_len);
                 }
             };
-            const current_bits = self.prev.? ^ diff_bits;
+            const current_bits = self.prev ^ diff_bits;
             self.prev = current_bits;
             self.prev_leading_zeros = @clz(diff_bits);
             self.prev_trailing_zeros = @ctz(diff_bits);
@@ -138,7 +125,7 @@ fn gorillaTest(comptime T: type, data: []const T) !void {
         for (data) |f| {
             try gorilla.add(f);
         }
-        try gorilla.flush();
+        try gorilla.finish();
         const total_size = counting.bytes_written;
         const raw_size = data.len * @sizeOf(T);
         std.debug.print("total size {} bytes, raw size {} bytes, savings: {d:.2}%\n", .{ total_size, raw_size, (1.0 - @intToFloat(f32, total_size) / @intToFloat(f32, raw_size)) * 100 });

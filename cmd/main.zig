@@ -26,12 +26,16 @@ const ZscParams = union(enum) {
 const ZscArgs = struct {
     input: std.fs.File,
     output: std.fs.File,
+    input_name: ?[:0]const u8,
+    output_name: ?[:0]const u8,
     params: ZscParams,
 };
 
 pub fn parseArgs(iterator: *std.process.ArgIterator) !ZscArgs {
     _ = iterator.skip();
     const command = iterator.next() orelse return error.CommandRequired;
+    var input_name: ?[:0]const u8 = null;
+    var output_name: ?[:0]const u8 = null;
     var input_file: ?std.fs.File = null;
     var output_file: ?std.fs.File = null;
     var width: u32 = 32;
@@ -51,9 +55,11 @@ pub fn parseArgs(iterator: *std.process.ArgIterator) !ZscArgs {
     while (iterator.next()) |token| {
         if (std.mem.eql(u8, token, "-i")) {
             const input = iterator.next() orelse return error.InputRequired;
+            input_name = input;
             input_file = try dir.openFileZ(input, .{ .mode = .read_only });
         } else if (std.mem.eql(u8, token, "-o")) {
             const output = iterator.next() orelse return error.OutputRequired;
+            output_name = output;
             output_file = try dir.createFileZ(output, .{});
         } else if (std.mem.eql(u8, token, "-a")) {
             const algorithm_string = iterator.next() orelse return error.AlgorithmRequired;
@@ -84,6 +90,8 @@ pub fn parseArgs(iterator: *std.process.ArgIterator) !ZscArgs {
     return .{
         .input = input_file orelse std.io.getStdIn(),
         .output = output_file orelse std.io.getStdOut(),
+        .input_name = input_name,
+        .output_name = output_name,
         .params = params,
     };
 }
@@ -126,7 +134,7 @@ fn compress(reader: anytype, compressor: anytype) !void {
             break;
         }
     } else |err| return err;
-    try compressor.flush();
+    try compressor.finish();
 }
 
 fn decompress(writer: anytype, decompressor: anytype) !void {
@@ -205,34 +213,65 @@ pub fn main() !void {
     var buffered_writer = std.io.bufferedWriter(args.output.writer());
     defer buffered_writer.flush() catch unreachable;
 
-    var reader = buffered_reader.reader();
-    var writer = buffered_writer.writer();
+    var counting_reader = std.io.countingReader(buffered_reader.reader());
+    var counting_writer = std.io.countingWriter(buffered_writer.writer());
+
+    var reader = counting_reader.reader();
+    var writer = counting_writer.writer();
     switch (args.params) {
         .compress => |c| {
             switch (c.algorithm) {
                 .gorilla => {
-                    var compressor = zsc.gorilla.gorillaCompressor(u32, writer);
-                    try compress(reader, &compressor);
+                    if (c.width == 32) {
+                        var compressor = zsc.gorilla.gorillaCompressor(u32, writer);
+                        try compress(reader, &compressor);
+                    } else if (c.width == 64) {
+                        var compressor = zsc.gorilla.gorillaCompressor(u64, writer);
+                        try compress(reader, &compressor);
+                    }
                 },
                 .entropy => {
-                    var compressor = zsc.entropy.entropyCompressor(u32, writer);
-                    try compress(reader, &compressor);
+                    if (c.width == 32) {
+                        var compressor = zsc.entropy.entropyCompressor(u32, writer);
+                        try compress(reader, &compressor);
+                    } else if (c.width == 64) {
+                        var compressor = zsc.entropy.entropyCompressor(u64, writer);
+                        try compress(reader, &compressor);
+                    }
                 },
             }
         },
         .decompress => |d| {
             switch (d.algorithm) {
                 .gorilla => {
-                    var decompressor = zsc.gorilla.gorillaDecompressor(u32, reader);
-                    try decompress(writer, &decompressor);
+                    if (d.width == 32) {
+                        var decompressor = zsc.gorilla.gorillaDecompressor(u32, reader);
+                        try decompress(writer, &decompressor);
+                    } else if (d.width == 64) {
+                        var decompressor = zsc.gorilla.gorillaDecompressor(u64, reader);
+                        try decompress(writer, &decompressor);
+                    }
                 },
                 .entropy => {
-                    var decompressor = zsc.entropy.entropyDecompressor(u32, reader);
-                    try decompress(writer, &decompressor);
+                    if (d.width == 32) {
+                        var decompressor = zsc.entropy.entropyDecompressor(u32, reader);
+                        try decompress(writer, &decompressor);
+                    } else if (d.width == 64) {
+                        var decompressor = zsc.entropy.entropyDecompressor(u64, reader);
+                        try decompress(writer, &decompressor);
+                    }
                 },
             }
         },
         .load => |l| try load(reader, writer, l),
         .dump => |d| try dump(reader, writer, d),
     }
+    std.debug.print("{s}: {s} => {s} : {d:.2}% ({} => {} bytes)\n", .{
+        @tagName(args.params),
+        args.input_name orelse "stdin",
+        args.output_name orelse "stdout",
+        @intToFloat(f32, counting_writer.bytes_written) / @intToFloat(f32, counting_reader.bytes_read) * 100,
+        counting_reader.bytes_read,
+        counting_writer.bytes_written,
+    });
 }

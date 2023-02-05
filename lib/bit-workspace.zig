@@ -76,35 +76,32 @@ pub fn BitWriteWorkspace(comptime T: type, comptime Writer: type) type {
             return .{ .workspace = 0, .position = 0, .writer = writer };
         }
 
-        pub fn add(self: *Self, value: anytype, bits: anytype) !usize {
-            var flushed: usize = 0;
-            if (bits == 0) {
-                return flushed;
-            }
+        pub fn safeAdd(self: *Self, value: anytype, bits: anytype) !void {
             if (self.position + bits > @bitSizeOf(T)) {
-                flushed = try self.flush();
+                try self.flush();
             }
+            try self.unsafeAdd(value, bits);
+        }
+
+        pub fn unsafeAdd(self: *Self, value: anytype, bits: anytype) !void {
             const mask = ~std.math.shl(T, ~@as(T, 0), bits);
             self.workspace = (self.workspace & ~std.math.shl(T, mask, self.position)) | std.math.shl(T, value & mask, self.position);
             self.position += bits;
-            return flushed;
         }
 
-        pub fn finish(self: *Self) !usize {
-            var size = try self.flush();
-            size += try self.add(0, 1);
-            size += try self.add((1 << 8) - 1, (8 - self.position % 8) % 8);
-            size += try self.flush();
-            return size;
+        pub fn finish(self: *Self) !void {
+            try self.flush();
+            try self.safeAdd(0, 1);
+            try self.safeAdd((1 << 8) - 1, (8 - self.position % 8) % 8);
+            try self.flush();
         }
 
-        fn flush(self: *Self) !usize {
+        pub fn flush(self: *Self) !void {
             var ptr = @ptrCast(*[t_info.Int.bits / 8]u8, &self.workspace);
             var size = (self.position - self.position % 8) / 8;
             try self.writer.writeAll((&ptr.*)[0..size]);
             self.workspace = std.math.shr(T, self.workspace, self.position - self.position % 8);
             self.position %= 8;
-            return size;
         }
     };
 }
@@ -117,10 +114,10 @@ test "write: single finish" {
     var buffer = [_]u8{0} ** 3;
     var stream = std.io.fixedBufferStream(&buffer);
     var w = bitWriteWorkspace(u32, stream.writer());
-    try testing.expectEqual(@as(usize, 0), try w.add(0b10110011, 8));
-    try testing.expectEqual(@as(usize, 0), try w.add(0b1100, 4));
-    try testing.expectEqual(@as(usize, 0), try w.add(0b10001, 5));
-    try testing.expectEqual(@as(usize, 3), try w.finish());
+    try w.safeAdd(0b10110011, 8);
+    try w.safeAdd(0b1100, 4);
+    try w.safeAdd(0b10001, 5);
+    try w.finish();
 
     try testing.expectEqual(@as(u8, 0b10110011), buffer[0]);
     try testing.expectEqual(@as(u8, 0b00011100), buffer[1]);
@@ -131,14 +128,14 @@ test "write: multiple flushes" {
     var buffer = [_]u8{0} ** 8;
     var stream = std.io.fixedBufferStream(&buffer);
     var w = bitWriteWorkspace(u32, stream.writer());
-    try testing.expectEqual(@as(usize, 0), try w.add(0b10110011, 15));
-    try testing.expectEqual(@as(usize, 0), try w.add(0b101, 3));
-    try testing.expectEqual(@as(usize, 2), try w.flush());
-    try testing.expectEqual(@as(usize, 0), try w.add(0b10001, 5));
-    try testing.expectEqual(@as(usize, 0), try w.flush());
-    try testing.expectEqual(@as(usize, 0), try w.add(0b01, 2));
-    try testing.expectEqual(@as(usize, 1), try w.flush());
-    try testing.expectEqual(@as(usize, 1), try w.finish());
+    try w.safeAdd(0b10110011, 15);
+    try w.safeAdd(0b101, 3);
+    try w.flush();
+    try w.safeAdd(0b10001, 5);
+    try w.flush();
+    try w.safeAdd(0b01, 2);
+    try w.flush();
+    try w.finish();
     try testing.expectEqual(@as(u8, 0b10110011), buffer[0]);
     try testing.expectEqual(@as(u8, 0b10000000), buffer[1]);
     try testing.expectEqual(@as(u8, 0b11000110), buffer[2]);
@@ -149,7 +146,7 @@ test "write: empty finish" {
     var buffer = [_]u8{0} ** 8;
     var stream = std.io.fixedBufferStream(&buffer);
     var w = bitWriteWorkspace(u32, stream.writer());
-    try testing.expectEqual(@as(usize, 1), try w.finish());
+    try w.finish();
     try testing.expectEqual(@as(u8, 0b11111110), buffer[0]);
 }
 
@@ -165,14 +162,14 @@ test "read/write" {
     {
         var stream = std.io.fixedBufferStream(&buffer);
         var w = bitWriteWorkspace(u32, stream.writer());
-        try testing.expectEqual(@as(usize, 0), try w.add(0b10110011, 15));
-        try testing.expectEqual(@as(usize, 0), try w.add(0b101, 3));
-        try testing.expectEqual(@as(usize, 2), try w.flush());
-        try testing.expectEqual(@as(usize, 0), try w.add(0b10001, 5));
-        try testing.expectEqual(@as(usize, 0), try w.flush());
-        try testing.expectEqual(@as(usize, 0), try w.add(0b01, 2));
-        try testing.expectEqual(@as(usize, 1), try w.flush());
-        try testing.expectEqual(@as(usize, 1), try w.finish());
+        try w.safeAdd(0b10110011, 15);
+        try w.safeAdd(0b101, 3);
+        try w.flush();
+        try w.safeAdd(0b10001, 5);
+        try w.flush();
+        try w.safeAdd(0b01, 2);
+        try w.flush();
+        try w.finish();
     }
 
     {
@@ -190,10 +187,10 @@ test "read/write 2" {
     {
         var stream = std.io.fixedBufferStream(&buffer);
         var w = bitWriteWorkspace(u32, stream.writer());
-        try testing.expectEqual(@as(usize, 0), try w.add(1, 1));
-        try testing.expectEqual(@as(usize, 0), try w.add(0, 5));
-        try testing.expectEqual(@as(usize, 0), try w.add(22, 6));
-        try testing.expectEqual(@as(usize, 2), try w.finish());
+        try w.safeAdd(1, 1);
+        try w.safeAdd(0, 5);
+        try w.safeAdd(22, 6);
+        try w.finish();
     }
 
     {
